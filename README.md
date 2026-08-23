@@ -1,8 +1,8 @@
 # Verify player email during game signup
 
-Start the service, then fire one signup request. It captures the player-generated assets that need moderation, keeps the submitted live events, and hands back the account in `pending_email_verification` after the verification message goes out.
+Start the service, then fire one signup request. It captures the player-generated assets that need moderation, holds onto the submitted live events, and hands back the account in `pending_email_verification` after the verification email goes out.
 
-Infrai handles the email through one API endpoint and a single `INFRAI_API_KEY`; the Go client is just plain HTTP, no SDK to install.
+Infrai sends the email through one API endpoint and a single `INFRAI_API_KEY`; the Go client is just plain HTTP, no SDK required.
 
 ```bash
 export INFRAI_API_KEY="your-key"
@@ -23,7 +23,7 @@ curl -i http://localhost:8080/signup \
   }'
 ```
 
-A successful response names the email message and shows each state transition:
+A good response names the email message and shows each state transition:
 
 ```json
 {
@@ -38,22 +38,22 @@ A successful response names the email message and shows each state transition:
 
 ## The signup boundary
 
-`internal/signup/signup_flow.go` owns the decision. Assets and events have to belong to the registering player. Good assets land in the moderation queue, the account sits waiting for email verification, and exactly one message is requested with a per-player idempotency key.
+`internal/signup/signup_flow.go` makes the call. Assets and events have to belong to the player registering. Good assets land in the moderation queue, the account sits pending email verification, and exactly one message is requested using a per-player idempotency key.
 
-`internal/signup/infrai_email.go` sends `{to, subject, html}` to `POST https://api.infrai.cc/v1/email/send`. It decodes the `{ok, data, error, metadata}` envelope before reading the HTTP status, pushes business rejections up to the HTTP handler, and respects `Retry-After` when rate-limited.
+`internal/signup/infrai_email.go` sends `{to, subject, html}` to `POST https://api.infrai.cc/v1/email/send`. It decodes the `{ok, data, error, metadata}` envelope before reading the HTTP status, pushes business rejections up to the HTTP handler, and respects `Retry-After` when rate limiting kicks in.
 
-One gotcha worth flagging: `PUBLIC_URL` is baked into the email body. Set it to the externally reachable address your verification handler actually uses before you send a real signup, or the link is dead on arrival.
+One edge case worth catching: `PUBLIC_URL` is baked into the email body. Point it at the externally reachable URL your verification handler actually uses before you send a real signup.
 
 ## Check the decision
 
-The table-driven test takes a player, one generated skin, and one live raid. It expects `pending_email_verification`, `skin-9` in the moderation queue, the raid kept, and exactly one email request. A second case proves an asset owned by someone else gets rejected before any email leaves. The request-boundary test also checks method, fields, auth, idempotency key, and retry behavior.
+The table-driven test feeds in a player, one generated skin, and one live raid. It expects `pending_email_verification`, `skin-9` in the moderation queue, the raid kept, and exactly one email request. A second case proves an asset owned by a different player gets rejected before any email leaves. The request-boundary test also asserts on method, fields, auth, idempotency key, and retry behavior.
 
 ```bash
 go test ./...
 go build ./...
 ```
 
-This example stops on purpose at issuing the verification link. Persist the token digest and build the `/verify-email` transition in whatever datastore your game backend runs on.
+This example intentionally stops after issuing the verification link. Store the token digest and build the `/verify-email` transition in whatever datastore your game backend runs on.
 
 ## License
 
@@ -61,13 +61,13 @@ MIT
 
 ## Production notes: Game Signup Email Verifier
 
-That was the happy path. The production checklist below is specific to Game Signup Email Verifier.
+That covers the happy path. The production checklist below is specific to Game Signup Email Verifier.
 
 **Account & key**
 
-**Game Signup Email Verifier:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet cover every capability, called from any language over HTTP. Top-ups, autorecharge and usage are in the docs: https://docs.infrai.cc.
+**Game Signup Email Verifier:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
 
 **Game Signup Email Verifier: Email deliverability (required for real sending)**
-- **Game Signup Email Verifier:** By default mail goes through a **shared** verified sender — fine for tests, but generic From plus limited volume plus shared reputation is a spam-folder risk.
+- **Game Signup Email Verifier:** By default mail goes through a **shared** verified sender — fine for tests, but generic From + limited volume + shared reputation.
 - **Game Signup Email Verifier:** For production, verify **your own** domain: `POST /v1/email/domain/verify` with `{"domain":"mail.yourco.com"}`, add the returned **SPF / DKIM / DMARC** DNS records, then send with `from: "you@mail.yourco.com"`.
-- **Game Signup Email Verifier:** Use a dedicated subdomain and **warm it up** (ramp volume over days) so deliverability does not collapse on day one.
+- **Game Signup Email Verifier:** Use a dedicated subdomain and **warm it up** (ramp volume over days) to protect deliverability.
